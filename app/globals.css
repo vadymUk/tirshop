@@ -1,26 +1,141 @@
 @import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.145 0 0);
+  --primary: oklch(0.205 0 0);
+  --primary-foreground: oklch(0.985 0 0);
+  --secondary: oklch(0.97 0 0);
+  --secondary-foreground: oklch(0.205 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.45 0 0);
+  --accent: oklch(0.97 0 0);
+  --accent-foreground: oklch(0.205 0 0);
+  --destructive: oklch(0.577 0.245 27.325);
+  --border: oklch(0.922 0 0);
+  --input: oklch(0.922 0 0);
+  --ring: oklch(0.55 0 0);
+  --radius: 0.625rem;
+  --ambient-one: oklch(0.82 0.11 235 / 24%);
+  --ambient-two: oklch(0.86 0.1 300 / 20%);
+  --gradient-end: oklch(0.36 0.13 255);
+  color-scheme: light;
+}
+
+.dark {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.922 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.704 0.191 22.216);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.556 0 0);
+  --ambient-one: oklch(0.45 0.13 245 / 24%);
+  --ambient-two: oklch(0.42 0.12 300 / 22%);
+  --gradient-end: oklch(0.37 0.13 285);
+  color-scheme: dark;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
   }
-}
-
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  html {
+    background-color: var(--background);
+    transition: background-color 400ms ease, color 400ms ease;
+  }
+  body {
+    @apply text-foreground font-sans;
+    position: relative;
+    isolation: isolate;
+    background: transparent;
+    transition: color 400ms ease;
+  }
+  body::before {
+    position: fixed;
+    z-index: 0;
+    inset: -35%;
+    background:
+      radial-gradient(ellipse at 25% 30%, var(--ambient-one), transparent 42%),
+      radial-gradient(ellipse at 75% 65%, var(--ambient-two), transparent 40%);
+    content: "";
+    pointer-events: none;
+    animation: ambient-drift 28s ease-in-out infinite alternate;
+  }
+  body > * {
+    position: relative;
+    z-index: 1;
+  }
+  .gradient-shift {
+    background-image: linear-gradient(
+      115deg,
+      var(--primary) 0%,
+      var(--gradient-end) 50%,
+      var(--primary) 100%
+    );
+    background-size: 200% 200%;
+    transition: background-position 500ms ease, box-shadow 300ms ease,
+      transform 300ms ease;
+  }
+  .gradient-shift:hover {
+    background-position: 100% 50%;
+    box-shadow: 0 8px 24px -12px var(--gradient-end);
+    transform: translateY(-1px);
+  }
+  @keyframes ambient-drift {
+    from {
+      transform: translate3d(-2%, -1%, 0) rotate(-3deg);
+    }
+    to {
+      transform: translate3d(2%, 1%, 0) rotate(3deg);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      scroll-behavior: auto !important;
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
 }
