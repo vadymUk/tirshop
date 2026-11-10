@@ -139,11 +139,11 @@ export function CheckoutForm({ defaultValues }: CheckoutFormProps) {
             className={`h-10 ${controlClass}`}
             {...register("country")}
           >
-            <option value="" disabled>
+            <option value="" disabled className="bg-background text-foreground">
               {t("Select a country")}
             </option>
             {SHIPPING_COUNTRIES.map((country) => (
-              <option key={country} value={country}>
+              <option key={country} value={country} className="bg-background text-foreground">
                 {country}
               </option>
             ))}
