@@ -179,10 +179,11 @@ authentication responses are marked private and no-store. External database
 changes that bypass application actions do not trigger immediate revalidation;
 cached product/category data becomes eligible for revalidation after 60/120
 seconds.
-The existing streaming loading boundaries can cause a missing or inactive
-product detail to return HTTP 200 with a not-found page and `noindex` rather
-than HTTP 404. Removing that limitation requires changing streaming or adding
-an existence check before rendering.
+For product detail GET and HEAD requests, Proxy checks whether the product is
+active before streaming starts. Missing or inactive products return HTTP 404
+with the normal not-found page; a failed database check returns HTTP 503 rather
+than treating an unavailable database as a missing product. This adds a
+lightweight anonymous database query to each product detail request.
 
 Apply `supabase/migrations/0020_pages_cms.sql` after `0019`. Active admins can
 create pages at `/admin/pages`, save private drafts and preview them before

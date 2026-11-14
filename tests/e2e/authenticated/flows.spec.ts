@@ -1,9 +1,18 @@
 import { expect, test, type Page } from "@playwright/test";
+import { createClient } from "@supabase/supabase-js";
+import { e2eConfiguration } from "../../helpers/test-environment.cjs";
 
 const email = process.env.E2E_USER_EMAIL;
 const password = process.env.E2E_USER_PASSWORD;
+const { supabase } = e2eConfiguration(process.env);
 
 test.skip(!email || !password, "Set E2E_USER_EMAIL and E2E_USER_PASSWORD (see .env.e2e.example)");
+
+function localClient() {
+  return createClient(supabase.url, supabase.publishableKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
 
 async function login(page: Page) {
   await page.goto("/auth/login");
@@ -13,10 +22,36 @@ async function login(page: Page) {
   await expect(page).not.toHaveURL(/\/auth\/login/);
 }
 
-async function openFirstInStockProduct(page: Page) {
-  await page.goto("/products");
-  await page.locator('a[href^="/products/"]').first().click();
-  await expect(page.getByRole("button", { name: "Додати до кошика" })).toBeEnabled();
+async function clearTestCart(page: Page) {
+  await page.goto("/cart");
+  const clear = page.getByRole("button", { name: "Очистити кошик" });
+  if (await clear.isVisible()) await clear.click();
+  await expect(page.getByText("Ваш кошик порожній")).toBeVisible();
+}
+
+async function addInStockProduct(page: Page) {
+  const result = await localClient().from("products")
+    .select("id,slug,price,currency,stock_quantity")
+    .eq("is_active", true).gte("stock_quantity", 2).order("id").limit(1).single();
+  if (result.error) throw new Error(`Could not find an in-stock test product: ${result.error.message}`);
+  const product = result.data;
+  await page.goto(`/products/${product.slug}`);
+  const purchase = page.getByRole("heading", { level: 1 }).locator("..").locator("..");
+  const add = purchase.getByRole("button", { name: "Додати до кошика" });
+  await expect(add).toBeEnabled();
+  await add.click();
+  await expect(page.getByText(/додано до кошика/)).toBeVisible();
+  return product;
+}
+
+async function fillCheckout(page: Page) {
+  await page.locator("#fullName").fill("E2E Customer");
+  await page.locator("#email").fill(email!);
+  await page.locator("#phone").fill("+48 600 100 200");
+  await page.locator("#country").selectOption("Poland");
+  await page.locator("#city").fill("Warszawa");
+  await page.locator("#postalCode").fill("00-001");
+  await page.locator("#address").fill("Testowa 1");
 }
 
 test.describe("session", () => {
@@ -63,56 +98,70 @@ test.describe("favorites", () => {
 test.describe("cart", () => {
   test("add, change quantity and remove", async ({ page }) => {
     await login(page);
-    await openFirstInStockProduct(page);
-    await page.getByRole("button", { name: "Додати до кошика" }).click();
+    await clearTestCart(page);
+    await addInStockProduct(page);
 
     await page.goto("/cart");
     const increase = page.getByRole("button", { name: /Збільшити кількість/ }).first();
     await expect(increase).toBeVisible();
+    const quantity = page.getByRole("group", { name: /Кількість:/ }).locator('[aria-live="polite"]');
+    await expect(quantity).toHaveText("1");
     await increase.click();
-    await expect(page.locator("[aria-live]").first()).toBeVisible();
+    await expect(quantity).toHaveText("2");
 
     await page.getByRole("button", { name: /Видалити/ }).first().click();
-    await expect(page.getByRole("button", { name: /Збільшити кількість/ })).toHaveCount(0);
+    await expect(page.getByText("Ваш кошик порожній")).toBeVisible();
   });
 });
 
 test.describe("checkout", () => {
   test("requires accepting the terms before placing the order", async ({ page }) => {
     await login(page);
-    await openFirstInStockProduct(page);
-    await page.getByRole("button", { name: "Додати до кошика" }).click();
+    await clearTestCart(page);
+    await addInStockProduct(page);
 
     await page.goto("/checkout");
+    await fillCheckout(page);
     await expect(page.locator("#acceptTerms")).not.toBeChecked();
     await page.getByRole("button", { name: "Оформити замовлення" }).click();
-    await expect(page).toHaveURL(/\/checkout/);
-    await expect(page.locator("#acceptTerms")).toBeVisible();
+    await expect(page).toHaveURL(/\/checkout$/);
+    await expect(page.locator("#acceptTerms-error")).toBeVisible();
   });
 
   test("full order flow (opt-in: creates an order in local Supabase)", async ({ page }) => {
     test.skip(process.env.E2E_PLACE_ORDER !== "true", "Set E2E_PLACE_ORDER=true to create a local test order");
     await login(page);
-    await openFirstInStockProduct(page);
-    await page.getByRole("button", { name: "Додати до кошика" }).click();
+    await clearTestCart(page);
+    const product = await addInStockProduct(page);
 
     await page.goto("/checkout");
-    for (const [name, value] of Object.entries({
-      customerName: "E2E Customer",
-      customerPhone: "+48 600 100 200",
-      country: "Poland",
-      city: "Warszawa",
-      postalCode: "00-001",
-      address: "Testowa 1",
-    })) {
-      const field = page.locator(`[name="${name}"]`);
-      if (await field.count()) await field.fill(value);
-    }
+    await fillCheckout(page);
     await page.locator("#acceptTerms").check();
     await page.getByRole("button", { name: "Оформити замовлення" }).click();
 
-    await expect(page).toHaveURL(/\/(account\/orders|checkout\/success|orders)/);
+    await expect(page).toHaveURL(/\/checkout\/success\?order=[0-9a-f-]+/);
+    await expect(page.getByRole("heading", { name: "Замовлення оформлено" })).toBeVisible();
+    const orderId = new URL(page.url()).searchParams.get("order");
+    expect(orderId).toBeTruthy();
+
+    const client = localClient();
+    const signedIn = await client.auth.signInWithPassword({ email: email!, password: password! });
+    if (signedIn.error) throw new Error(`Could not verify the test order: ${signedIn.error.message}`);
+    const order = await client.from("orders")
+      .select("id,customer_email,total_amount,currency,order_items(product_id,quantity,subtotal)")
+      .eq("id", orderId!).single();
+    expect(order.error).toBeNull();
+    expect(order.data).toMatchObject({
+      customer_email: email,
+      total_amount: product.price,
+      currency: product.currency,
+      order_items: [{ product_id: product.id, quantity: 1, subtotal: product.price }],
+    });
+    const stock = await client.from("products").select("stock_quantity").eq("id", product.id).single();
+    expect(stock.error).toBeNull();
+    expect(stock.data?.stock_quantity).toBe(product.stock_quantity - 1);
+
     await page.goto("/cart");
-    await expect(page.getByRole("button", { name: /Збільшити кількість/ })).toHaveCount(0);
+    await expect(page.getByText("Ваш кошик порожній")).toBeVisible();
   });
 });

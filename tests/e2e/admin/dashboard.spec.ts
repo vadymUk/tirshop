@@ -92,7 +92,7 @@ test.describe("isolated administrator workflows", () => {
     await page.goto("/admin/products/new");
     await page.getByLabel("Назва", { exact: true }).fill(`E2E product ${run}`);
     await page.getByLabel("Slug", { exact: true }).fill(productSlug);
-    await page.getByLabel("Категорія", { exact: true }).selectOption(categoryId);
+    await page.locator('select[name="category_id"]').selectOption(categoryId);
     const price = page.getByLabel("Ціна", { exact: true });
     await price.fill("0");
     await page.getByRole("button", { name: "Зберегти товар" }).click();
@@ -103,9 +103,18 @@ test.describe("isolated administrator workflows", () => {
     await expect(page).toHaveURL(/\/admin\/products\/[0-9a-f-]+\/edit\?saved=1/);
     await expect(page.getByRole("status").filter({ hasText: "Товар збережено" })).toBeVisible();
 
-    const publicProduct = await anonymous.from("products").select("id,price,stock_quantity").eq("slug", productSlug).single();
+    const publicProduct = await anonymous.from("products").select("id,category_id,price,stock_quantity").eq("slug", productSlug).single();
     expect(publicProduct.error).toBeNull();
-    expect(publicProduct.data).toMatchObject({ price: 15.5, stock_quantity: 8 });
+    expect(publicProduct.data).toMatchObject({ category_id: categoryId, price: 15.5, stock_quantity: 8 });
+    expect((await page.request.get(`/products/${productSlug}`)).status()).toBe(200);
+    const storefront = await page.context().newPage();
+    await storefront.route(`**/products/${productSlug}*`, async (route) => {
+      if (route.request().headers()["next-router-prefetch"]) await route.abort();
+      else await route.continue();
+    });
+    await storefront.goto(`/products?q=${encodeURIComponent(`E2E product ${run}`)}`);
+    const productLink = storefront.locator(`a[href="/products/${productSlug}"]`).first();
+    await expect(productLink).toBeVisible();
 
     await page.getByLabel("Ціна", { exact: true }).fill("21.75");
     await page.getByLabel("Залишок", { exact: true }).fill("4");
@@ -119,6 +128,13 @@ test.describe("isolated administrator workflows", () => {
     const hidden = await anonymous.from("products").select("id").eq("slug", productSlug);
     expect(hidden.error).toBeNull();
     expect(hidden.data).toEqual([]);
+    await productLink.click();
+    await expect(storefront).toHaveURL(new RegExp(`/products/${productSlug}$`));
+    await expect(storefront.getByRole("heading", { name: "Page not found" })).toBeVisible();
+    await storefront.close();
+    const unavailable = await page.goto(`/products/${productSlug}`);
+    expect(unavailable?.status()).toBe(404);
+    await expect(page.getByRole("heading", { name: "Page not found" })).toBeVisible();
 
     await page.goto(`/admin/products?q=${encodeURIComponent(`E2E product ${run}`)}`);
     await page.getByLabel(`Вибрати E2E product ${run}`).check();

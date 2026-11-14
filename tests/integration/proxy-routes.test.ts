@@ -3,12 +3,21 @@ import { NextRequest } from "next/server";
 
 const auth = vi.hoisted(() => ({ getClaims: vi.fn(), getUser: vi.fn() }));
 const rpc = vi.hoisted(() => vi.fn());
+const productQuery = vi.hoisted(() => ({
+  select: vi.fn(),
+  eq: vi.fn(),
+  maybeSingle: vi.fn(),
+}));
 
 vi.mock("@supabase/ssr", () => ({
   createServerClient: () => ({ auth, rpc }),
 }));
+vi.mock("@/lib/supabase/public", () => ({
+  createPublicClient: () => ({ from: () => productQuery }),
+}));
 
 import { updateSession } from "@/lib/supabase/proxy";
+import { proxy } from "@/proxy";
 
 const signedIn = () => auth.getClaims.mockResolvedValue({ data: { claims: { sub: "user-1" } } });
 const signedOut = () => auth.getClaims.mockResolvedValue({ data: null });
@@ -94,5 +103,53 @@ describe("guest-only pages", () => {
     signedIn();
     expect(location(await run("/auth/callback"))).toBeNull();
     expect(location(await run("/auth/reset-password"))).toBeNull();
+  });
+});
+
+describe("product status before streaming", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    signedOut();
+    productQuery.select.mockReturnValue(productQuery);
+    productQuery.eq.mockReturnValue(productQuery);
+  });
+
+  it("allows an active product through using the decoded slug", async () => {
+    productQuery.maybeSingle.mockResolvedValue({ data: { id: "product-1" }, error: null });
+    const response = await proxy(new NextRequest("http://localhost:3000/products/%74est-item"));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-middleware-rewrite")).toBeNull();
+    expect(productQuery.eq).toHaveBeenCalledWith("slug", "test-item");
+    expect(productQuery.eq).toHaveBeenCalledWith("is_active", true);
+  });
+
+  it("rewrites missing or inactive products to a 404 without redirecting", async () => {
+    productQuery.maybeSingle.mockResolvedValue({ data: null, error: null });
+    const response = await proxy(new NextRequest("http://localhost:3000/products/missing?ref=test"));
+    expect(response.status).toBe(404);
+    expect(response.headers.get("location")).toBeNull();
+    expect(response.headers.get("x-middleware-rewrite")).toBe(
+      "http://localhost:3000/__product-not-found__/__missing__?ref=test",
+    );
+  });
+
+  it("reports database failures as unavailable, not missing", async () => {
+    productQuery.maybeSingle.mockResolvedValue({ data: null, error: { message: "database unavailable" } });
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await proxy(new NextRequest("http://localhost:3000/products/item"));
+      expect(response.status).toBe(503);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(log).toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it("does not intercept product page actions or other routes", async () => {
+    const action = new NextRequest("http://localhost:3000/products/item", { method: "POST" });
+    expect((await proxy(action)).status).toBe(200);
+    expect((await proxy(new NextRequest("http://localhost:3000/products"))).status).toBe(200);
+    expect(productQuery.select).not.toHaveBeenCalled();
   });
 });

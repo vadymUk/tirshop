@@ -28,17 +28,20 @@ test.describe("catalog", () => {
     await first.click();
     await expect(page).toHaveURL(new RegExp(`${href}$`));
     await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+    const response = await page.goto(href!);
+    expect(response?.status()).toBe(200);
   });
 
   test("unknown product slug shows the not-found page", async ({ page }) => {
     const response = await page.goto("/products/this-product-does-not-exist-xyz");
     expect(response?.status()).toBe(404);
-  });
-
-  test("a streamed not-found product is not indexable", async ({ page }) => {
-    await page.goto("/products/this-product-does-not-exist-xyz");
     await expect(page.getByRole("heading", { name: "Page not found" })).toBeVisible();
     await expect(page.locator('meta[name="robots"][content*="noindex"]').first()).toHaveCount(1);
+  });
+
+  test("HEAD requests for an unknown product return 404", async ({ request }) => {
+    const response = await request.head("/products/this-product-does-not-exist-xyz");
+    expect(response.status()).toBe(404);
   });
 
   test("category page lists its products", async ({ page }) => {
