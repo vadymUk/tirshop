@@ -1,7 +1,10 @@
 import { Suspense } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { Truck } from "lucide-react";
-import { siteConfig, sellerContacts } from "@/config/site";
+import { siteConfig } from "@/config/site";
+import { getPublicSettings, contactLinks } from "@/lib/settings/public";
+import { mediaUrl } from "@/lib/admin/media-shared";
 import { getCategoriesForNavigation } from "@/lib/db/queries/categories";
 import { getLanguage } from "@/lib/i18n";
 import { translate } from "@/lib/translations";
@@ -56,9 +59,10 @@ async function FooterCategories() {
 }
 
 export async function SiteFooter() {
-  const language = await getLanguage();
+  const [language, settings] = await Promise.all([getLanguage(), getPublicSettings()]);
   const t = (source: string) => translate(language, source);
-  const { phoneDisplay, links } = sellerContacts;
+  const phoneDisplay = settings.contact_phone;
+  const links = contactLinks(settings);
   const navLinks = [
     { href: "/", label: t("Головна") },
     { href: "/products", label: t("Товари") },
@@ -69,7 +73,11 @@ export async function SiteFooter() {
     { label: "WhatsApp", href: links.whatsapp, external: true },
     { label: "Viber", href: links.viber, external: false },
     { label: "Telegram", href: links.telegram, external: true },
-  ];
+  ].filter((item) => item.href);
+  const social = [
+    { label: "Facebook", href: settings.facebook_url }, { label: "Instagram", href: settings.instagram_url },
+    { label: "TikTok", href: settings.tiktok_url }, { label: "YouTube", href: settings.youtube_url },
+  ].filter((item) => item.href);
 
   return (
     <footer className="mt-12 border-t bg-muted/30">
@@ -79,15 +87,15 @@ export async function SiteFooter() {
             href="/"
             className="inline-flex items-center gap-2 rounded-md font-semibold outline-none focus-visible:ring-2 focus-visible:ring-ring"
           >
-            <span className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
+            {settings.logo_path ? <Image src={mediaUrl("site-media", settings.logo_path)} width={36} height={36} alt="" className="size-9 object-contain" /> : <span className="flex size-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
               <Truck className="size-5" aria-hidden="true" />
-            </span>
+            </span>}
             <span id="footer-about" className="text-lg">
-              {siteConfig.name}
+              {settings.store_name}
             </span>
           </Link>
           <p className="max-w-xs text-sm text-muted-foreground">
-            {t("Практичні товари та аксесуари для далекобійників і професійних водіїв у довгих європейських рейсах.")}
+            {settings.store_description === null ? t(siteConfig.description) : settings.store_description}
           </p>
         </section>
 
@@ -126,7 +134,7 @@ export async function SiteFooter() {
             {t("Контакти")}
           </h2>
           <address className="space-y-2 text-sm not-italic">
-            <p>
+            {phoneDisplay && <p>
               <span className="text-muted-foreground">{t("Телефон: ")}</span>
               <a
                 href={links.phone}
@@ -135,20 +143,24 @@ export async function SiteFooter() {
               >
                 {phoneDisplay}
               </a>
-            </p>
+            </p>}
+            {settings.contact_email && <p><a href={`mailto:${settings.contact_email}`} className={linkClass}>{settings.contact_email}</a></p>}
             <ul className="flex flex-wrap gap-x-4 gap-y-1">
               {messengers.map(({ label, href, external }) => (
                 <li key={label}>
                   <a
                     href={href}
                     {...(external ? { target: "_blank", rel: "noopener noreferrer" } : {})}
-                    aria-label={`${label}: ${phoneDisplay}`}
+                    aria-label={label}
                     className={linkClass}
                   >
                     {label}
                   </a>
                 </li>
               ))}
+            </ul>
+            <ul className="flex flex-wrap gap-x-4 gap-y-1">
+              {social.map(({ label, href }) => <li key={label}><a href={href} target="_blank" rel="noopener noreferrer" className={linkClass}>{label}</a></li>)}
             </ul>
           </address>
         </section>
@@ -157,12 +169,13 @@ export async function SiteFooter() {
       <div className="border-t">
         <div className="mx-auto flex max-w-7xl flex-col gap-2 px-4 py-5 text-sm text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
           <p>
-            © {new Date().getFullYear()} {siteConfig.name}. {t("Усі права захищено.")}
+            © {new Date().getFullYear()} {settings.store_name}. {t("Усі права захищено.")}
           </p>
           <p>
-            {t("Реквізити компанії (NIP, REGON, VAT) —")}{" "}
             <Link href="/about#company" className={linkClass + " underline"}>
-              {t("буде додано пізніше")}
+              {settings.company_name || settings.nip || settings.regon || settings.vat_details
+                ? t("Інформація про компанію")
+                : `${t("Реквізити компанії (NIP, REGON, VAT) —")} ${t("буде додано пізніше")}`}
             </Link>
           </p>
         </div>

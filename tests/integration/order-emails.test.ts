@@ -4,11 +4,14 @@ import { createQueryBuilder } from "../helpers/query-builder";
 const mocks = vi.hoisted(() => ({
   send: vi.fn(),
   orderResult: { current: null as unknown },
+  settingsResult: { current: null as unknown },
+  notifyFailure: vi.fn(),
 }));
 
+vi.mock("@/lib/admin/notifications-email", () => ({ notifyOrderEmailFailure: mocks.notifyFailure }));
 vi.mock("@/lib/supabase/admin", () => ({
   createAdminClient: () => ({
-    from: () => createQueryBuilder(mocks.orderResult.current),
+    from: (table: string) => createQueryBuilder(table === "site_settings" ? mocks.settingsResult.current : mocks.orderResult.current),
   }),
 }));
 vi.mock("resend", () => ({
@@ -61,8 +64,10 @@ const order = {
 
 beforeEach(() => {
   mocks.send.mockReset();
+  mocks.notifyFailure.mockReset();
   mocks.send.mockResolvedValue({ data: { id: "email-1" }, error: null });
   mocks.orderResult.current = { data: order, error: null };
+  mocks.settingsResult.current = { data: { seller_notification_email: null, customer_email_notifications: true }, error: null };
   vi.spyOn(console, "error").mockImplementation(() => undefined);
 });
 
@@ -120,6 +125,7 @@ describe("order emails", () => {
         : { data: { id: "ok" }, error: null },
     );
     expect(await sendOrderEmails(ORDER_ID)).toEqual({ seller: true, customer: false });
+    expect(mocks.notifyFailure).toHaveBeenCalledWith(ORDER_ID);
 
     mocks.send.mockImplementation(async (message: { to: string }) => {
       if (message.to === "seller@example.test") throw new Error("network");
@@ -133,6 +139,20 @@ describe("order emails", () => {
     expect(await sendOrderEmails(ORDER_ID)).toEqual({ seller: false, customer: false });
 
     mocks.orderResult.current = { data: null, error: { message: "db down" } };
+    expect(await sendOrderEmails(ORDER_ID)).toEqual({ seller: false, customer: false });
+    expect(mocks.send).not.toHaveBeenCalled();
+  });
+
+  it("uses the configured seller address and respects customer notification settings", async () => {
+    mocks.settingsResult.current = { data: { seller_notification_email: "other@example.test", customer_email_notifications: false }, error: null };
+    expect(await sendOrderEmails(ORDER_ID)).toEqual({ seller: true, customer: false });
+    expect(sentTo("other@example.test")).toBeTruthy();
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+    expect(mocks.notifyFailure).not.toHaveBeenCalled();
+  });
+
+  it("does not send if notification settings cannot be read", async () => {
+    mocks.settingsResult.current = { data: null, error: { message: "unavailable" } };
     expect(await sendOrderEmails(ORDER_ID)).toEqual({ seller: false, customer: false });
     expect(mocks.send).not.toHaveBeenCalled();
   });

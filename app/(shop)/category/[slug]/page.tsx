@@ -46,9 +46,10 @@ export async function generateMetadata({ params, searchParams }: Props): Promise
   });
 
   const basePath = `/category/${category.slug}`;
-  const title = page > 1 ? `${category.name} — сторінка ${page}` : category.name;
+  const baseTitle = category.meta_title || category.name;
+  const title = page > 1 ? `${baseTitle} — сторінка ${page}` : baseTitle;
   const baseDescription = truncate(
-    category.description ??
+    category.meta_description || category.description ||
       `${category.name}: практичні товари для далекобійників у довгих рейсах Європою.`,
     140,
   );

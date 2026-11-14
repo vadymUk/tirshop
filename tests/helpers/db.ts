@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import { databaseTestsEnabled, localSupabaseConfiguration } from "./test-environment.cjs";
 
 /**
  * Helpers for tests that run against a REAL, dedicated Supabase project (never production):
@@ -8,20 +9,20 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
  * Required env (see .env.test.example):
  *   TEST_SUPABASE_URL, TEST_SUPABASE_PUBLISHABLE_KEY, TEST_SUPABASE_SECRET_KEY, ALLOW_DB_TESTS=true
  */
-export const dbTestsEnabled =
-  process.env.ALLOW_DB_TESTS === "true" &&
-  Boolean(
-    process.env.TEST_SUPABASE_URL &&
-      process.env.TEST_SUPABASE_PUBLISHABLE_KEY &&
-      process.env.TEST_SUPABASE_SECRET_KEY,
-  );
+export const dbTestsEnabled = databaseTestsEnabled(process.env);
 
-const url = () => process.env.TEST_SUPABASE_URL!;
 const options = { auth: { persistSession: false, autoRefreshToken: false } } as const;
 
-export const adminClient = (): SupabaseClient => createClient(url(), process.env.TEST_SUPABASE_SECRET_KEY!, options);
-export const anonClient = (): SupabaseClient =>
-  createClient(url(), process.env.TEST_SUPABASE_PUBLISHABLE_KEY!, options);
+export const adminClient = (): SupabaseClient => {
+  if (!databaseTestsEnabled(process.env)) throw new Error("Database tests are not enabled.");
+  const { url, secretKey } = localSupabaseConfiguration(process.env);
+  return createClient(url, secretKey, options);
+};
+export const anonClient = (): SupabaseClient => {
+  if (!databaseTestsEnabled(process.env)) throw new Error("Database tests are not enabled.");
+  const { url, publishableKey } = localSupabaseConfiguration(process.env);
+  return createClient(url, publishableKey, options);
+};
 
 export type TestUser = { id: string; email: string; client: SupabaseClient };
 

@@ -14,7 +14,7 @@ const CATALOG_REVALIDATE_SECONDS = 60;
 const CARD_SELECT =
   "id, category_id, name, slug, short_description, price, currency, stock_quantity, product_images(id, storage_path, alt_text, sort_order), categories(id, name, slug)";
 const DETAIL_SELECT =
-  "id, category_id, name, slug, short_description, description, price, currency, stock_quantity, product_images(id, storage_path, alt_text, sort_order), categories(id, name, slug)";
+  "id, category_id, name, slug, short_description, description, price, currency, stock_quantity, meta_title, meta_description, og_image_path, product_images(id, storage_path, alt_text, sort_order), categories(id, name, slug)";
 
 type ListOptions = {
   categoryId?: string;

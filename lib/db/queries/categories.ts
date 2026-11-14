@@ -3,7 +3,7 @@ import { unstable_cache } from "next/cache";
 import { cache } from "react";
 import { createPublicClient } from "@/lib/supabase/public";
 
-const CATEGORY_COLUMNS = "id, name, slug, description, image_url";
+const CATEGORY_COLUMNS = "id, name, slug, description, image_url, meta_title, meta_description";
 const CATALOG_REVALIDATE_SECONDS = 120;
 
 /** Public data: cached across requests, refreshed by the "catalog" tag or after 2 minutes. */
@@ -14,7 +14,9 @@ const loadCategories = unstable_cache(
       .from("categories")
       .select(CATEGORY_COLUMNS)
       .eq("is_active", true)
-      .order("name");
+      .order("sort_order")
+      .order("name")
+      .order("id");
     if (error) throw new Error(`Failed to load categories: ${error.message}`);
     return data;
   },

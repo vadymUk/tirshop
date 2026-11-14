@@ -1,6 +1,7 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 import sharp from "sharp";
+import { authorizeAdminOperation, logAdminActivity } from "@/lib/admin/security";
 import { createAdminClient } from "@/lib/supabase/admin";
 import {
   MAX_IMAGES_PER_PRODUCT,
@@ -17,11 +18,7 @@ import {
   validateImageFile,
 } from "@/lib/storage/validation";
 
-/*
- * Privileged, server-only operations (service role, bypasses RLS).
- * These functions do NOT authorize the caller: the Server Action / Route Handler
- * that uses them must first verify the user is an administrator.
- */
+/* Privileged server-only operations; each entry point authorizes the caller. */
 
 export type UploadResult = {
   uploaded: { id: string; storagePath: string }[];
@@ -55,6 +52,7 @@ export async function uploadProductImages(
   files: File[],
   altText?: string,
 ): Promise<UploadResult> {
+  await authorizeAdminOperation("admin-image-upload", 20, 60);
   const id = productIdSchema.parse(productId);
   const alt = altTextSchema.parse(altText) ?? null;
   const supabase = createAdminClient();
@@ -116,7 +114,7 @@ export async function uploadProductImages(
       nextOrder += 1;
       result.uploaded.push({ id: row.id, storagePath: path });
     } catch (error) {
-      if (path) await supabase.storage.from(PRODUCT_IMAGES_BUCKET).remove([path]);
+      if (path) console.error("Product image upload failed; review possible orphan:", path, error);
       result.errors.push({
         fileName: file.name,
         message: error instanceof Error ? error.message : "Upload failed",
@@ -124,20 +122,37 @@ export async function uploadProductImages(
     }
   }
 
+  if (result.uploaded.length > 0) {
+    await logAdminActivity({
+      action: "upload",
+      entityType: "product_image",
+      entityId: id,
+      metadata: { uploaded_count: result.uploaded.length },
+    });
+  }
+
   return result;
 }
 
 /** Sets display order; imageIds must be exactly the product's images, first = primary. */
 export async function reorderProductImages(productId: string, imageIds: string[]) {
+  await authorizeAdminOperation("admin-image-reorder");
   const input = reorderImagesSchema.parse({ productId, imageIds });
   const { error } = await createAdminClient().rpc("reorder_product_images", {
     p_product_id: input.productId,
     p_image_ids: input.imageIds,
   });
   if (error) throw new Error(`Failed to reorder images: ${error.message}`);
+  await logAdminActivity({
+    action: "reorder",
+    entityType: "product_image",
+    entityId: input.productId,
+    metadata: { image_count: input.imageIds.length },
+  });
 }
 
 export async function deleteProductImage(imageId: string) {
+  await authorizeAdminOperation("admin-image-delete");
   const supabase = createAdminClient();
   const { data: image, error } = await supabase
     .from("product_images")
@@ -147,20 +162,21 @@ export async function deleteProductImage(imageId: string) {
   if (error) throw new Error(error.message);
   if (!image) return;
 
-  const { error: removeError } = await supabase.storage
-    .from(PRODUCT_IMAGES_BUCKET)
-    .remove([image.storage_path]);
-  if (removeError) throw new Error(removeError.message);
-
   const { error: deleteError } = await supabase
     .from("product_images")
     .delete()
     .eq("id", image.id);
   if (deleteError) throw new Error(deleteError.message);
+  await logAdminActivity({
+    action: "delete",
+    entityType: "product_image",
+    entityId: image.id,
+  });
 }
 
-/** Call before deleting a product: DB rows cascade, storage objects do not. */
+/** Detach product images; storage objects remain for reference-checked cleanup. */
 export async function deleteAllProductImages(productId: string) {
+  await authorizeAdminOperation("admin-image-delete");
   const supabase = createAdminClient();
   const id = productIdSchema.parse(productId);
 
@@ -170,16 +186,17 @@ export async function deleteAllProductImages(productId: string) {
     .eq("product_id", id);
   if (error) throw new Error(error.message);
 
-  if (images.length > 0) {
-    const { error: removeError } = await supabase.storage
-      .from(PRODUCT_IMAGES_BUCKET)
-      .remove(images.map((i) => i.storage_path));
-    if (removeError) throw new Error(removeError.message);
-  }
-
   const { error: deleteError } = await supabase
     .from("product_images")
     .delete()
     .eq("product_id", id);
   if (deleteError) throw new Error(deleteError.message);
+  if (images.length > 0) {
+    await logAdminActivity({
+      action: "delete_all",
+      entityType: "product_image",
+      entityId: id,
+      metadata: { deleted_count: images.length },
+    });
+  }
 }

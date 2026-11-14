@@ -90,8 +90,8 @@ test.describe("checkout", () => {
     await expect(page.locator("#acceptTerms")).toBeVisible();
   });
 
-  test("full order flow (opt-in: creates a real order and sends emails)", async ({ page }) => {
-    test.skip(process.env.E2E_PLACE_ORDER !== "true", "Set E2E_PLACE_ORDER=true to create a real order");
+  test("full order flow (opt-in: creates an order in local Supabase)", async ({ page }) => {
+    test.skip(process.env.E2E_PLACE_ORDER !== "true", "Set E2E_PLACE_ORDER=true to create a local test order");
     await login(page);
     await openFirstInStockProduct(page);
     await page.getByRole("button", { name: "Додати до кошика" }).click();

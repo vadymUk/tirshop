@@ -7,6 +7,7 @@ import { safeNextPath } from "@/lib/auth/redirect";
 import { isRateLimited } from "@/lib/rate-limit";
 import type { ActionResult } from "@/lib/auth/types";
 import { createClient } from "@/lib/supabase/server";
+import { createAdminClient } from "@/lib/supabase/admin";
 import {
   forgotPasswordSchema,
   loginSchema,
@@ -36,7 +37,7 @@ export async function signInAction(
   if (await isRateLimited("sign-in", 10, 300)) return TOO_MANY;
 
   const supabase = await createClient();
-  const { error } = await supabase.auth.signInWithPassword(parsed.data);
+  const { data, error } = await supabase.auth.signInWithPassword(parsed.data);
 
   if (error) {
     return {
@@ -46,6 +47,20 @@ export async function signInAction(
           ? "Please verify your email address before signing in."
           : "Invalid email or password.",
     };
+  }
+
+  try {
+    if (!data.user) throw new Error("Sign-in succeeded without a user.");
+    const audit = await createAdminClient().rpc("record_admin_login", { p_actor: data.user.id });
+    if (audit.error) throw new Error(`Could not audit sign-in: ${audit.error.message}`);
+  } catch (auditError) {
+    console.error("Could not audit sign-in:", auditError);
+    const signOut = await supabase.auth.signOut();
+    if (signOut.error) {
+      console.error("Could not close session after audit failure:", signOut.error);
+      return { success: false, error: "Sign-in auditing failed and the session could not be closed. Sign out and contact support." };
+    }
+    return { success: false, error: "Sign-in could not be completed. Please try again later." };
   }
 
   revalidatePath("/", "layout");

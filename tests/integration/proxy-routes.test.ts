@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 
-const auth = vi.hoisted(() => ({ getClaims: vi.fn() }));
+const auth = vi.hoisted(() => ({ getClaims: vi.fn(), getUser: vi.fn() }));
+const rpc = vi.hoisted(() => vi.fn());
 
 vi.mock("@supabase/ssr", () => ({
-  createServerClient: () => ({ auth }),
+  createServerClient: () => ({ auth, rpc }),
 }));
 
 import { updateSession } from "@/lib/supabase/proxy";
@@ -18,16 +19,35 @@ const location = (response: Response) => response.headers.get("location");
 beforeEach(() => signedOut());
 
 describe("protected routes", () => {
-  it.each(["/cart", "/checkout", "/favorites", "/account", "/account/orders", "/admin"])(
+  it.each(["/cart", "/checkout", "/favorites", "/account", "/account/orders"])(
     "redirects guests from %s to login and preserves the return path",
     async (path) => {
       const response = await run(path);
       expect(response.status).toBe(307);
+      expect(response.headers.get("cache-control")).toBe("private, no-store");
       expect(location(response)).toBe(
         `http://localhost:3000/auth/login?next=${encodeURIComponent(path)}`,
       );
     },
   );
+
+  it("returns 401 for a guest before the admin page can stream", async () => {
+    const response = await run("/admin");
+    expect(response.status).toBe(401);
+    expect(location(response)).toBeNull();
+  });
+
+  it("checks the verified user and active database role on admin routes", async () => {
+    signedIn();
+    auth.getUser.mockResolvedValue({ data: { user: { id: "user-1" } }, error: null });
+    rpc.mockResolvedValue({ data: false, error: null });
+    expect((await run("/admin/products")).status).toBe(403);
+    rpc.mockResolvedValue({ data: true, error: null });
+    expect((await run("/admin/products")).status).toBe(200);
+    expect(rpc).toHaveBeenCalledWith("is_active_admin");
+    rpc.mockResolvedValue({ data: null, error: { message: "unavailable" } });
+    expect((await run("/admin/products")).status).toBe(503);
+  });
 
   it("keeps the query string in the return path", async () => {
     const response = await run("/checkout?step=2");

@@ -1,10 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
 import { config as loadEnv } from "dotenv";
+import testEnvironment from "./tests/helpers/test-environment.cjs";
 
-loadEnv({ path: ".env.e2e" });
+loadEnv({ path: ".env.e2e", quiet: true });
 
-const PORT = Number(process.env.E2E_PORT ?? 3000);
-const baseURL = process.env.E2E_BASE_URL ?? `http://localhost:${PORT}`;
+const { port, baseURL, supabase } = testEnvironment.e2eConfiguration(process.env);
 
 export default defineConfig({
   testDir: "./tests/e2e",
@@ -31,13 +31,22 @@ export default defineConfig({
     { name: "mobile", testMatch: /public\/.*\.spec\.ts/, use: { ...devices["Pixel 7"] } },
     // Needs E2E_USER_EMAIL / E2E_USER_PASSWORD; specs skip themselves without them.
     { name: "authenticated", testMatch: /authenticated\/.*\.spec\.ts/, use: { ...devices["Desktop Chrome"] }, workers: 1 },
+    { name: "admin", testMatch: /admin\/.*\.spec\.ts/, use: { ...devices["Desktop Chrome"] }, workers: 1 },
   ],
-  webServer: process.env.E2E_BASE_URL
-    ? undefined
-    : {
-        command: process.env.CI ? "npm run start" : "npm run dev",
-        url: baseURL,
-        reuseExistingServer: !process.env.CI,
-        timeout: 180_000,
-      },
+  webServer: {
+    command: `npm run dev -- --port ${port}`,
+    url: baseURL,
+    reuseExistingServer: false,
+    timeout: 180_000,
+    env: {
+      NEXT_PUBLIC_SITE_URL: baseURL,
+      NEXT_PUBLIC_SUPABASE_URL: supabase.url,
+      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: supabase.publishableKey,
+      NEXT_PUBLIC_SUPABASE_IMAGE_TRANSFORMS: "false",
+      SUPABASE_SECRET_KEY: supabase.secretKey,
+      RESEND_API_KEY: "",
+      RESEND_FROM_EMAIL: "",
+      SELLER_EMAIL: "",
+    },
+  },
 });

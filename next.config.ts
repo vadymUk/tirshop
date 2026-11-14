@@ -35,18 +35,36 @@ const securityHeaders = [
 const nextConfig: NextConfig = {
   poweredByHeader: false,
   experimental: {
+    authInterrupts: true,
     optimizePackageImports: ["radix-ui", "lucide-react"],
+    serverActions: { bodySizeLimit: "9mb" },
   },
   async headers() {
     return [
       { source: "/:path*", headers: securityHeaders },
       {
+        source: "/admin/:path*",
+        headers: [{ key: "Cache-Control", value: "private, no-store" }, { key: "X-Robots-Tag", value: "noindex, nofollow" }],
+      },
+      {
+        source: "/admin/customers/:path*",
+        headers: [{ key: "Cache-Control", value: "private, no-store" }, { key: "Referrer-Policy", value: "no-referrer" }],
+      },
+      {
+        source: "/admin/homepage/:path*",
+        headers: [{ key: "Cache-Control", value: "private, no-store" }],
+      },
+      {
+        source: "/admin/pages/:path*",
+        headers: [{ key: "Cache-Control", value: "private, no-store" }, { key: "X-Robots-Tag", value: "noindex, nofollow" }],
+      },
+      {
         source: "/:section(account|checkout|favorites|cart|auth)/:path*",
-        headers: [{ key: "X-Robots-Tag", value: "noindex, nofollow" }],
+        headers: [{ key: "X-Robots-Tag", value: "noindex, nofollow" }, { key: "Cache-Control", value: "private, no-store" }],
       },
       {
         source: "/:section(cart|checkout|favorites|account)",
-        headers: [{ key: "X-Robots-Tag", value: "noindex, nofollow" }],
+        headers: [{ key: "X-Robots-Tag", value: "noindex, nofollow" }, { key: "Cache-Control", value: "private, no-store" }],
       },
     ];
   },
@@ -57,11 +75,11 @@ const nextConfig: NextConfig = {
     imageSizes: [64, 128, 256, 384],
     remotePatterns: supabaseUrl
       ? [
-          {
+          ...["product-images", "site-media"].map((bucket) => ({
             protocol: supabaseUrl.protocol.replace(":", "") as "http" | "https",
             hostname: supabaseUrl.hostname,
-            pathname: "/storage/v1/object/public/product-images/**",
-          },
+            pathname: `/storage/v1/object/public/${bucket}/**`,
+          })),
         ]
       : [],
   },

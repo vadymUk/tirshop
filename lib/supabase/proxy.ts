@@ -8,7 +8,6 @@ const PROTECTED_PREFIXES = [
   "/cart",
   "/checkout",
   "/account",
-  "/admin",
 ];
 // Signed-in users have no reason to see these.
 const GUEST_ONLY_PATHS = [
@@ -55,10 +54,35 @@ export async function updateSession(request: NextRequest) {
     url.pathname = path;
     url.search = query ?? "";
     const redirect = NextResponse.redirect(url);
+    redirect.headers.set("Cache-Control", "private, no-store");
     // Keep refreshed session cookies on the redirect response.
     response.cookies.getAll().forEach((c) => redirect.cookies.set(c));
     return redirect;
   };
+
+  if (matches(pathname, "/admin")) {
+    const reject = (status: number, title: string) => {
+      const denied = new NextResponse(
+        `<!doctype html><html lang="uk"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>${title}</title><body style="font-family:system-ui;max-width:36rem;margin:5rem auto;padding:0 1rem"><h1>${title}</h1><p><a href="/auth/login?next=%2Fadmin">Увійти</a> · <a href="/">Магазин</a></p></body></html>`,
+        { status, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "private, no-store" } },
+      );
+      response.cookies.getAll().forEach((cookie) => denied.cookies.set(cookie));
+      return denied;
+    };
+
+    if (!user) return reject(401, "401 — Потрібен вхід");
+    const verified = await supabase.auth.getUser();
+    if (verified.error || !verified.data.user) {
+      console.error("Failed to verify admin session:", verified.error?.message ?? "missing user");
+      return reject(503, "Не вдалося перевірити доступ");
+    }
+    const admin = await supabase.rpc("is_active_admin");
+    if (admin.error) {
+      console.error("Failed to verify admin role:", admin.error.message);
+      return reject(503, "Не вдалося перевірити доступ");
+    }
+    if (!admin.data) return reject(403, "403 — Доступ заборонено");
+  }
 
   if (!user && PROTECTED_PREFIXES.some((p) => matches(pathname, p))) {
     return redirectTo(

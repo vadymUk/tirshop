@@ -14,12 +14,33 @@ import {
 describe.skipIf(!dbTestsEnabled)("RLS and authorization (real database)", () => {
   let alice: TestUser;
   let mallory: TestUser;
+  let administrator: TestUser;
+  let inactiveAdministrator: TestUser;
   let categoryId: string;
   let productId: string;
   let orderId: string;
 
   beforeAll(async () => {
-    [alice, mallory] = await Promise.all([createTestUser("alice"), createTestUser("mallory")]);
+    [alice, mallory, administrator, inactiveAdministrator] = await Promise.all([
+      createTestUser("alice"),
+      createTestUser("mallory"),
+      createTestUser("administrator"),
+      createTestUser("inactive-administrator"),
+    ]);
+    const promotion = await adminClient()
+      .from("profiles")
+      .update({ role: "admin" })
+      .eq("id", administrator.id);
+    if (promotion.error) throw new Error(`Could not prepare admin fixture: ${promotion.error.message}`);
+
+    const deactivation = await adminClient()
+      .from("profiles")
+      .update({ role: "admin", is_active: false })
+      .eq("id", inactiveAdministrator.id);
+    if (deactivation.error) {
+      throw new Error(`Could not prepare inactive admin fixture: ${deactivation.error.message}`);
+    }
+
     categoryId = await createCategory();
     productId = await createProduct(categoryId, { price: 12.5, stock: 20 });
 
@@ -34,6 +55,320 @@ describe.skipIf(!dbTestsEnabled)("RLS and authorization (real database)", () => 
   });
 
   afterAll(cleanupTestData);
+
+  describe("administrator role and access", () => {
+    it("keeps product costs private while permitting verified administrators to retrieve them", async () => {
+      const item = await createProduct(categoryId, { price: 12, stock: 5 });
+      expect((await adminClient().from("products").update({ cost_price: 4.75 }).eq("id", item)).error).toBeNull();
+      for (const client of [anonClient(), alice.client, inactiveAdministrator.client, administrator.client]) {
+        expect((await client.from("products").select("id,cost_price").eq("id", item)).error).not.toBeNull();
+        expect((await client.from("products").select("*").eq("id", item)).error).not.toBeNull();
+      }
+      const publicProduct = await anonClient().from("products").select("id,name,price").eq("id", item).single();
+      expect(publicProduct.error).toBeNull();
+      expect(publicProduct.data).toMatchObject({ id: item, price: 12 });
+      expect((await anonClient().from("categories").select("id,products(cost_price)").eq("id", categoryId)).error).not.toBeNull();
+      const args = { p_product_id: item };
+      expect((await anonClient().rpc("admin_product_cost", args)).error).not.toBeNull();
+      expect((await alice.client.rpc("admin_product_cost", args)).error).not.toBeNull();
+      expect((await inactiveAdministrator.client.rpc("admin_product_cost", args)).error).not.toBeNull();
+      const result = await administrator.client.rpc("admin_product_cost", args);
+      expect(result.error).toBeNull();
+      expect(result.data).toEqual([{ product_id: item, cost_price: 4.75 }]);
+    });
+
+    it("restricts customer summaries and filters order counts", async () => {
+      const args = { p_id: alice.id };
+      expect((await alice.client.rpc("admin_customers", args)).error).not.toBeNull();
+      expect((await inactiveAdministrator.client.rpc("admin_customers", args)).error).not.toBeNull();
+      expect((await anonClient().rpc("admin_customers", args)).error).not.toBeNull();
+      const result = await administrator.client.rpc("admin_customers", args);
+      expect(result.error).toBeNull();
+      expect(result.data).toHaveLength(1);
+      expect(result.data[0]).toMatchObject({ id: alice.id, order_count: 1, totals: [{ currency: "EUR", amount: 25 }] });
+      expect((await administrator.client.rpc("admin_customers", { ...args, p_min_orders: 2 })).data).toEqual([]);
+      expect((await administrator.client.rpc("admin_customers", { ...args, p_max_orders: 0 })).data).toEqual([]);
+      expect((await administrator.client.rpc("admin_customers", { p_min_orders: 3, p_max_orders: 2 })).error).not.toBeNull();
+      expect((await administrator.client.rpc("admin_customers", { ...args, p_from: "1900-01-01", p_to: "1900-01-01" })).data).toEqual([]);
+      expect((await administrator.client.rpc("admin_customers", { ...args, p_query: "not-a-customer-name" })).data).toEqual([]);
+    });
+
+    it("searches profiles and separates all order totals by currency", async () => {
+      const buyer = await createTestUser("customer-summary");
+      const updateProfile = await adminClient().from("profiles").update({
+        full_name: "Customer Summary Test", phone: "+48123456789", created_at: "2020-06-15T12:00:00Z",
+      }).eq("id", buyer.id);
+      expect(updateProfile.error).toBeNull();
+      const item = await createProduct(categoryId, { price: 10, stock: 5 });
+      for (const currency of ["EUR", "PLN"]) {
+        expect((await buyer.client.rpc("add_to_cart", { p_product_id: item, p_quantity: 1 })).error).toBeNull();
+        const order = await placeOrder(buyer);
+        expect(order.error).toBeNull();
+        expect((await adminClient().from("orders").update({ currency }).eq("id", order.data)).error).toBeNull();
+      }
+      const args = { p_id: buyer.id, p_query: "123456", p_from: "2020-06-15", p_to: "2020-06-15", p_min_orders: 2, p_max_orders: 2 };
+      const result = await administrator.client.rpc("admin_customers", args);
+      expect(result.error).toBeNull();
+      expect(result.data).toHaveLength(1);
+      expect(result.data[0]).toMatchObject({ order_count: 2, totals: [{ currency: "EUR", amount: 10 }, { currency: "PLN", amount: 10 }] });
+      expect((await administrator.client.rpc("admin_customers", { ...args, p_from: "2020-06-16", p_to: "2020-06-16" })).data).toEqual([]);
+      const noOrders = await administrator.client.rpc("admin_customers", { p_id: mallory.id, p_max_orders: 0 });
+      expect(noOrders.data[0]).toMatchObject({ order_count: 0, latest_order: null, totals: [] });
+    });
+
+    it("protects category operations and moves products before deletion", async () => {
+      const source = await createCategory();
+      const item = await createProduct(source);
+      const args = { p_id: source, p_target: categoryId };
+      expect((await alice.client.rpc("admin_delete_category", args)).error).not.toBeNull();
+      expect((await inactiveAdministrator.client.rpc("admin_delete_category", args)).error).not.toBeNull();
+      expect((await anonClient().rpc("admin_delete_category", args)).error).not.toBeNull();
+      expect((await administrator.client.from("categories").delete().eq("id", source)).error).not.toBeNull();
+      expect((await administrator.client.rpc("admin_delete_category", { p_id: source })).error?.message).toContain("category_has_products");
+      const moved = await administrator.client.rpc("admin_move_category", { p_id: source, p_target: categoryId });
+      expect(moved.error).toBeNull();
+      expect(moved.data).toBe(true);
+      const removed = await administrator.client.rpc("admin_delete_category", args);
+      expect(removed.error).toBeNull();
+      expect(removed.data).toBe(true);
+      const product = await adminClient().from("products").select("category_id").eq("id", item).single();
+      expect(product.error).toBeNull();
+      expect(product.data?.category_id).toBe(categoryId);
+    });
+
+    it("protects product saves and blocks deletion of historical products", async () => {
+      const payload = {
+        category_id: categoryId, name: "Managed product", slug: `managed-${Date.now()}`, sku: "",
+        short_description: "", description: "", price: 10, compare_at_price: "",
+        currency: "EUR", weight: "", is_active: true, is_featured: false,
+        meta_title: "", meta_description: "", og_image_path: "",
+      };
+      expect((await alice.client.rpc("admin_save_product", { p_id: null, p_product: payload, p_stock: 3 })).error).not.toBeNull();
+      const created = await administrator.client.rpc("admin_save_product", { p_id: null, p_product: payload, p_stock: 3 });
+      expect(created.error).toBeNull();
+      expect(created.data).toBeTruthy();
+      const stale = await administrator.client.rpc("admin_save_product", { p_id: created.data, p_product: payload, p_stock: 5, p_expected_stock: 2 });
+      expect(stale.error?.message).toContain("stock_conflict");
+      const saved = await administrator.client.rpc("admin_save_product", { p_id: created.data, p_product: payload, p_stock: 5, p_expected_stock: 3 });
+      expect(saved.error).toBeNull();
+      const referenced = await administrator.client.rpc("admin_bulk_products", { p_ids: [productId], p_operation: "delete" });
+      expect(referenced.error?.message).toContain("product_has_orders");
+      const removed = await administrator.client.rpc("admin_bulk_products", { p_ids: [created.data], p_operation: "delete" });
+      expect(removed.error).toBeNull();
+      expect(removed.data).toBe(true);
+    });
+
+    it("restricts aggregate analytics to active admins and validates the date range", async () => {
+      const filter = { p_period: "custom", p_from: "1901-02-03", p_to: "1901-02-03" };
+      expect((await alice.client.rpc("admin_dashboard_overview", filter)).error).not.toBeNull();
+      expect((await inactiveAdministrator.client.rpc("admin_dashboard_overview", filter)).error).not.toBeNull();
+      expect((await anonClient().rpc("admin_dashboard_overview", filter)).error).not.toBeNull();
+      expect((await administrator.client.rpc("admin_dashboard_overview", { ...filter, p_to: "1905-02-03" })).error).not.toBeNull();
+      const result = await administrator.client.rpc("admin_dashboard_overview", filter);
+      expect(result.error).toBeNull();
+      expect(result.data).toMatchObject({ from: "1901-02-03", to: "1901-02-03" });
+    });
+
+    it("aggregates paid, pending, cancelled and refunded orders separately by currency", async () => {
+      const buyer = await createTestUser("analytics");
+      const analyticsProduct = await createProduct(categoryId, { price: 10, stock: 50 });
+      const filter = { p_period: "custom", p_from: "1901-02-03", p_to: "1901-02-03" };
+      const baseline = await administrator.client.rpc("admin_dashboard_overview", filter);
+      expect(baseline.error).toBeNull();
+
+      const cases = [
+        { status: "processing", payment_status: "paid", currency: "EUR", at: "1901-02-03T00:00:00Z" },
+        { status: "completed", payment_status: "pending", currency: "EUR", at: "1901-02-03T12:00:00Z" },
+        { status: "cancelled", payment_status: "paid", currency: "EUR", at: "1901-02-03T15:00:00Z" },
+        { status: "completed", payment_status: "refunded", currency: "EUR", at: "1901-02-03T18:00:00Z" },
+        { status: "completed", payment_status: "paid", currency: "PLN", at: "1901-02-03T23:59:59Z" },
+        { status: "completed", payment_status: "paid", currency: "EUR", at: "1901-02-04T00:00:00Z" },
+      ];
+      for (const item of cases) {
+        const cart = await buyer.client.rpc("add_to_cart", { p_product_id: analyticsProduct, p_quantity: 1 });
+        expect(cart.error).toBeNull();
+        const order = await placeOrder(buyer);
+        expect(order.error).toBeNull();
+        const update = await adminClient().from("orders").update({
+          status: item.status, payment_status: item.payment_status, currency: item.currency, created_at: item.at,
+        }).eq("id", order.data);
+        expect(update.error).toBeNull();
+      }
+
+      const result = await administrator.client.rpc("admin_dashboard_overview", filter);
+      expect(result.error).toBeNull();
+      expect(result.data.orders - baseline.data.orders).toBe(5);
+      expect(result.data.completed_orders - baseline.data.completed_orders).toBe(3);
+      expect(result.data.cancelled_orders - baseline.data.cancelled_orders).toBe(1);
+      const sum = (data: typeof result.data, currency: string, field: string) =>
+        Number(data.money.find((row: { currency: string }) => row.currency === currency)?.[field] ?? 0);
+      expect(sum(result.data, "EUR", "order_value") - sum(baseline.data, "EUR", "order_value")).toBe(40);
+      expect(sum(result.data, "EUR", "paid_revenue") - sum(baseline.data, "EUR", "paid_revenue")).toBe(10);
+      expect(sum(result.data, "EUR", "pending_value") - sum(baseline.data, "EUR", "pending_value")).toBe(10);
+      expect(sum(result.data, "EUR", "cancelled_value") - sum(baseline.data, "EUR", "cancelled_value")).toBe(10);
+      expect(sum(result.data, "PLN", "paid_revenue") - sum(baseline.data, "PLN", "paid_revenue")).toBe(10);
+      expect(result.data.top_products.find((row: { product_id: string; currency: string }) => row.product_id === analyticsProduct && row.currency === "EUR")).toMatchObject({ quantity: 1, revenue: 10 });
+      expect(result.data.daily_orders.find((row: { day: string }) => row.day === "1901-02-03").count -
+        (baseline.data.daily_orders.find((row: { day: string }) => row.day === "1901-02-03")?.count ?? 0)).toBe(5);
+    });
+
+    it("customers cannot promote themselves or change their active status", async () => {
+      const roleChange = await alice.client
+        .from("profiles")
+        .update({ role: "admin" })
+        .eq("id", alice.id);
+      const activeChange = await alice.client
+        .from("profiles")
+        .update({ is_active: false })
+        .eq("id", alice.id);
+      const readPrivilegeFields = await alice.client
+        .from("profiles")
+        .select("role, is_active")
+        .eq("id", alice.id);
+
+      expect(roleChange.error).not.toBeNull();
+      expect(activeChange.error).not.toBeNull();
+      expect(readPrivilegeFields.error).not.toBeNull();
+      const { data } = await adminClient()
+        .from("profiles")
+        .select("role, is_active")
+        .eq("id", alice.id)
+        .single();
+      expect(data).toMatchObject({ role: "customer", is_active: true });
+    });
+
+    it("requires an active database administrator, independent of user metadata", async () => {
+      const customer = await alice.client.rpc("is_active_admin");
+      const activeAdmin = await administrator.client.rpc("is_active_admin");
+      const disabledAdmin = await inactiveAdministrator.client.rpc("is_active_admin");
+
+      expect(customer.data).toBe(false);
+      expect(activeAdmin.data).toBe(true);
+      expect(disabledAdmin.data).toBe(false);
+    });
+
+    it("admins can manage catalog and view customer profiles and orders", async () => {
+      const productUpdate = await administrator.client
+        .from("products")
+        .update({ is_featured: true })
+        .eq("id", productId);
+      expect(productUpdate.error).toBeNull();
+
+      const productAudit = await administrator.client
+        .from("admin_activity_logs")
+        .select("id")
+        .eq("entity_type", "products")
+        .eq("entity_id", productId)
+        .eq("action", "update");
+      expect(productAudit.data?.length).toBeGreaterThan(0);
+
+      const allProfiles = await administrator.client
+        .from("profiles")
+        .select("id")
+        .eq("id", alice.id);
+      expect(allProfiles.data).toHaveLength(1);
+
+      const allOrders = await administrator.client
+        .from("orders")
+        .select("id")
+        .eq("id", orderId);
+      expect(allOrders.data).toHaveLength(1);
+
+      await adminClient().from("products").update({ is_featured: false }).eq("id", productId);
+    });
+
+    it("admins change stock only through the rate-limited RPC", async () => {
+      const directUpdate = await administrator.client
+        .from("products")
+        .update({ stock_quantity: 21 })
+        .eq("id", productId);
+      expect(directUpdate.error).not.toBeNull();
+
+      const stockChange = await administrator.client.rpc("admin_set_product_stock", {
+        p_product_id: productId,
+        p_new_quantity: 21,
+        p_reason: "RLS integration test",
+      });
+      expect(stockChange.error).toBeNull();
+      expect(stockChange.data).toBe(true);
+
+      const reset = await administrator.client.rpc("admin_set_product_stock", {
+        p_product_id: productId,
+        p_new_quantity: 20,
+        p_reason: "Restore integration fixture",
+      });
+      expect(reset.error).toBeNull();
+      expect(reset.data).toBe(true);
+    });
+
+    it("enforces order transitions, private details and single stock restoration", async () => {
+      const buyer = await createTestUser("order-management");
+      const item = await createProduct(categoryId, { stock: 5 });
+      expect((await buyer.client.rpc("add_to_cart", { p_product_id: item, p_quantity: 2 })).error).toBeNull();
+      const order = await placeOrder(buyer);
+      expect(order.error).toBeNull();
+      const args = { p_order_id: order.data, p_expected: "pending" as const, p_status: "cancelled" as const };
+      expect((await buyer.client.rpc("admin_transition_order", args)).error).not.toBeNull();
+      expect((await inactiveAdministrator.client.rpc("admin_transition_order", args)).error).not.toBeNull();
+      expect((await administrator.client.rpc("admin_update_order_status", { p_order_id: order.data, p_status: "cancelled" })).error).not.toBeNull();
+      expect((await administrator.client.rpc("admin_transition_order", { ...args, p_status: "shipped" })).error).not.toBeNull();
+      expect((await administrator.client.rpc("admin_save_order_details", { p_order_id: order.data, p_internal_note: "private", p_shipping_provider: "carrier", p_tracking_number: "tracking" })).error).toBeNull();
+      const privateData = await buyer.client.from("order_admin_details").select("*").eq("order_id", order.data);
+      expect(privateData.error === null ? privateData.data : []).toHaveLength(0);
+      expect((await buyer.client.from("orders").update({ payment_status: "paid" }).eq("id", order.data)).error).not.toBeNull();
+      const [cancelled, repeated] = await Promise.all([
+        administrator.client.rpc("admin_transition_order", args),
+        administrator.client.rpc("admin_transition_order", args),
+      ]);
+      const success = cancelled.error ? repeated : cancelled;
+      const conflict = cancelled.error ? cancelled : repeated;
+      expect(success.error).toBeNull();
+      expect(success.data).toBeTruthy();
+      expect(conflict.error).not.toBeNull();
+      expect((await administrator.client.rpc("admin_transition_order", args)).error).not.toBeNull();
+      const stock = await adminClient().from("products").select("stock_quantity").eq("id", item).single();
+      expect(stock.data?.stock_quantity).toBe(5);
+      const history = await administrator.client.from("order_status_history").select("new_status,changed_by").eq("id", success.data).single();
+      expect(history.data).toMatchObject({ new_status: "cancelled", changed_by: administrator.id });
+    });
+
+    it("customers cannot access other profiles or administrative logs", async () => {
+      const otherProfile = await mallory.client
+        .from("profiles")
+        .select("id")
+        .eq("id", alice.id);
+      const activities = await mallory.client.from("admin_activity_logs").select("id");
+      const inventory = await mallory.client.from("inventory_logs").select("id");
+
+      expect(otherProfile.data).toEqual([]);
+      expect(activities.error !== null || activities.data?.length === 0).toBe(true);
+      expect(inventory.error !== null || inventory.data?.length === 0).toBe(true);
+    });
+
+    it("authenticated users cannot append or mutate activity records", async () => {
+      const customerWrite = await mallory.client.rpc("record_admin_activity", {
+        p_action: "forged",
+        p_entity_type: "product",
+        p_metadata: {},
+      });
+      expect(customerWrite.error).not.toBeNull();
+
+      const adminWrite = await administrator.client.rpc("record_admin_activity", {
+        p_action: "test",
+        p_entity_type: "product",
+        p_entity_id: productId,
+        p_metadata: { test: true },
+      });
+      expect(adminWrite.error).not.toBeNull();
+
+      const adminLogs = await administrator.client
+        .from("admin_activity_logs")
+        .select("action")
+        .eq("admin_user_id", administrator.id);
+      expect(adminLogs.data?.some((log) => log.action === "test")).toBe(false);
+      expect((await administrator.client.from("admin_activity_logs").update({ action: "forged" }).eq("admin_user_id", administrator.id)).error).not.toBeNull();
+    });
+  });
 
   describe("favorites", () => {
     it("owner can read their favorite", async () => {

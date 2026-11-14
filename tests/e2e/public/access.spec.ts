@@ -1,13 +1,26 @@
 import { expect, test } from "@playwright/test";
 
 test.describe("protected routes (guest)", () => {
-  for (const path of ["/cart", "/checkout", "/favorites", "/account", "/admin"]) {
+  test("private responses and redirects are not cacheable", async ({ request }) => {
+    for (const path of ["/admin", "/cart", "/checkout", "/favorites", "/account"]) {
+      const response = await request.get(path, { maxRedirects: 0 });
+      expect(response.headers()["cache-control"]).toContain("no-store");
+    }
+  });
+
+  for (const path of ["/cart", "/checkout", "/favorites", "/account"]) {
     test(`${path} redirects to login and remembers the destination`, async ({ page }) => {
       await page.goto(path);
       await expect(page).toHaveURL(/\/auth\/login/);
       expect(decodeURIComponent(new URL(page.url()).searchParams.get("next") ?? "")).toContain(path);
     });
   }
+
+  test("admin returns 401 to guests before rendering", async ({ page }) => {
+    const response = await page.goto("/admin");
+    expect(response?.status()).toBe(401);
+    await expect(page.getByRole("heading", { name: /Потрібен вхід/ })).toBeVisible();
+  });
 
   test("login page does not follow external redirects", async ({ page }) => {
     await page.goto("/auth/login?next=https://evil.example");

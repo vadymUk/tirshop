@@ -35,6 +35,12 @@ test.describe("catalog", () => {
     expect(response?.status()).toBe(404);
   });
 
+  test("a streamed not-found product is not indexable", async ({ page }) => {
+    await page.goto("/products/this-product-does-not-exist-xyz");
+    await expect(page.getByRole("heading", { name: "Page not found" })).toBeVisible();
+    await expect(page.locator('meta[name="robots"][content*="noindex"]').first()).toHaveCount(1);
+  });
+
   test("category page lists its products", async ({ page }) => {
     await page.goto("/products");
     const link = page.locator('a[href^="/category/"]').first();

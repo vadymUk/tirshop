@@ -1,7 +1,7 @@
 "use server";
 
 import { after } from "next/server";
-import { revalidateTag } from "next/cache";
+import { updateTag } from "next/cache";
 import { getCurrentUser } from "@/lib/auth/session";
 import { isRateLimited } from "@/lib/rate-limit";
 import { getCart } from "@/lib/db/queries/cart";
@@ -89,8 +89,8 @@ export async function placeOrderAction(input: unknown): Promise<PlaceOrderResult
   // The order is committed. Emails run after the response; failures are logged inside
   // sendOrderEmails and never affect the order or what the customer sees.
   after(() => sendOrderEmails(orderId));
-  // Stock changed: mark cached public catalog data stale so listings refresh.
-  revalidateTag("products", "max");
+  // Stock changed: expire public product data before the next request.
+  updateTag("products");
 
   return { success: true, orderId };
 }

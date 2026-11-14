@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
   getCart: vi.fn(),
   placeOrder: vi.fn(),
   sendOrderEmails: vi.fn(),
-  revalidateTag: vi.fn(),
+  updateTag: vi.fn(),
   after: vi.fn((callback: () => unknown) => callback()),
 }));
 
@@ -20,7 +20,7 @@ vi.mock("@/lib/db/queries/orders", async (importActual) => ({
   placeOrder: mocks.placeOrder,
 }));
 vi.mock("@/lib/email/send-order-emails", () => ({ sendOrderEmails: mocks.sendOrderEmails }));
-vi.mock("next/cache", () => ({ revalidateTag: mocks.revalidateTag, revalidatePath: vi.fn() }));
+vi.mock("next/cache", () => ({ updateTag: mocks.updateTag, revalidatePath: vi.fn() }));
 vi.mock("next/server", () => ({ after: mocks.after }));
 
 import { placeOrderAction } from "@/lib/checkout/actions";
@@ -129,7 +129,7 @@ describe("placeOrderAction: cart and stock validation", () => {
       error: "We couldn't place your order. Please try again.",
     });
     expect(mocks.sendOrderEmails).not.toHaveBeenCalled();
-    expect(mocks.revalidateTag).not.toHaveBeenCalled();
+    expect(mocks.updateTag).not.toHaveBeenCalled();
   });
 
   it("returns a friendly error if the cart cannot be verified", async () => {
@@ -145,7 +145,7 @@ describe("placeOrderAction: order creation", () => {
 
     expect(result).toEqual({ success: true, orderId: ORDER_ID });
     expect(mocks.sendOrderEmails).toHaveBeenCalledWith(ORDER_ID);
-    expect(mocks.revalidateTag).toHaveBeenCalledWith("products", "max");
+    expect(mocks.updateTag).toHaveBeenCalledWith("products");
   });
 
   it("passes only customer details to the database: never prices, totals, status or user id", async () => {

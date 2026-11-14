@@ -9,6 +9,8 @@ import { getFromAddress, getResend, getSellerEmail } from "@/lib/email/resend";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { formatPrice } from "@/lib/utils";
 import type { OrderStatus, PaymentStatus } from "@/types/database";
+import { z } from "zod";
+import { notifyOrderEmailFailure } from "@/lib/admin/notifications-email";
 
 export type SendOrderEmailsResult = { seller: boolean; customer: boolean };
 
@@ -113,15 +115,30 @@ export async function sendOrderEmails(orderId: string): Promise<SendOrderEmailsR
     order = data;
   } catch (error) {
     logEmailFailure("order lookup", orderId, error);
+    await notifyOrderEmailFailure(orderId);
     return result;
   }
   if (!order) {
     console.error(`[email] order ${orderId} not found, no emails sent`);
+    await notifyOrderEmailFailure(orderId);
     return result;
   }
 
   const stored: OrderWithItems = order;
   const emailOrder = toEmailOrder(stored);
+  let sellerEmail: string;
+  let customerEnabled: boolean;
+  try {
+    const settings = await createAdminClient().from("site_settings")
+      .select("seller_notification_email,customer_email_notifications").limit(1).maybeSingle();
+    if (settings.error || !settings.data) throw new Error(settings.error?.message ?? "missing settings");
+    sellerEmail = z.string().email().parse(settings.data.seller_notification_email || getSellerEmail());
+    customerEnabled = settings.data.customer_email_notifications;
+  } catch (error) {
+    logEmailFailure("settings lookup", orderId, error);
+    await notifyOrderEmailFailure(orderId);
+    return result;
+  }
 
   const [seller, customer] = await Promise.all([
     deliver("seller", orderId, async () => {
@@ -129,7 +146,7 @@ export async function sendOrderEmails(orderId: string): Promise<SendOrderEmailsR
       return getResend().emails.send(
         {
           from: getFromAddress(),
-          to: getSellerEmail(),
+          to: sellerEmail,
           replyTo: stored.customer_email,
           subject: `Нове замовлення ${emailOrder.orderNumber} — ${emailOrder.total}`,
           html,
@@ -137,20 +154,21 @@ export async function sendOrderEmails(orderId: string): Promise<SendOrderEmailsR
         { idempotencyKey: `order-seller/${orderId}` },
       );
     }),
-    deliver("customer", orderId, async () => {
+    customerEnabled ? deliver("customer", orderId, async () => {
       const html = await render(CustomerConfirmationEmail({ order: emailOrder }));
       return getResend().emails.send(
         {
           from: getFromAddress(),
           to: stored.customer_email,
-          replyTo: getSellerEmail(),
+          replyTo: sellerEmail,
           subject: `Ваше замовлення ${emailOrder.orderNumber} прийнято`,
           html,
         },
         { idempotencyKey: `order-customer/${orderId}` },
       );
-    }),
+    }) : Promise.resolve(false),
   ]);
 
+  if (!seller || (customerEnabled && !customer)) await notifyOrderEmailFailure(orderId);
   return { seller, customer };
 }

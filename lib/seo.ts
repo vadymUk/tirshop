@@ -33,27 +33,27 @@ export function breadcrumbJsonLd(items: Crumb[]) {
   };
 }
 
-export function organizationJsonLd() {
+export function organizationJsonLd(name: string = siteConfig.name, description: string = siteConfig.description, phone: string = sellerContacts.phone) {
   return {
     "@context": "https://schema.org",
     "@type": "Organization",
-    name: siteConfig.name,
+    name,
     url: SITE_URL,
-    description: siteConfig.description,
-    contactPoint: {
+    description,
+    ...(phone ? { contactPoint: {
       "@type": "ContactPoint",
-      telephone: sellerContacts.phone,
+      telephone: phone,
       contactType: "customer service",
       availableLanguage: ["uk", "pl"],
-    },
+    } } : {}),
   };
 }
 
-export function websiteJsonLd() {
+export function websiteJsonLd(name: string = siteConfig.name) {
   return {
     "@context": "https://schema.org",
     "@type": "WebSite",
-    name: siteConfig.name,
+    name,
     url: SITE_URL,
     inLanguage: "uk",
   };

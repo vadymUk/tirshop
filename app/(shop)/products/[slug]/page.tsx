@@ -13,6 +13,7 @@ import { JsonLd } from "@/components/seo/json-ld";
 import { formatPrice } from "@/lib/utils";
 import { getLanguage } from "@/lib/i18n";
 import { translate } from "@/lib/translations";
+import { seoImagePath, mediaUrl } from "@/lib/admin/media-shared";
 
 type Props = { params: Promise<{ slug: string }> };
 
@@ -31,19 +32,25 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   if (!product) return { title: "Товар не знайдено", robots: { index: false } };
 
   const first = sortProductImages(product.product_images)[0];
-  const description = productDescription(product);
+  const title = product.meta_title || product.name;
+  const description = product.meta_description || productDescription(product);
   const url = absoluteUrl(`/products/${product.slug}`);
-  const images = first
-    ? [{ url: getProductImageOriginalUrl(first.storage_path), alt: first.alt_text || product.name }]
+  if (product.og_image_path && !seoImagePath.safeParse(product.og_image_path).success) {
+    throw new Error("Invalid product Open Graph image path");
+  }
+  const images = product.og_image_path
+    ? [{ url: mediaUrl("site-media", product.og_image_path), alt: product.name }]
+    : first
+      ? [{ url: getProductImageOriginalUrl(first.storage_path), alt: first.alt_text || product.name }]
     : undefined;
   return {
-    title: product.name,
+    title,
     description,
     alternates: { canonical: `/products/${product.slug}` },
-    openGraph: { title: product.name, description, url, type: "website", images },
+    openGraph: { title, description, url, type: "website", images },
     twitter: {
       card: images ? "summary_large_image" : "summary",
-      title: product.name,
+      title,
       description,
       images: images?.map((i) => i.url),
     },

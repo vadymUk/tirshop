@@ -7,6 +7,9 @@ const rateLimited = vi.hoisted(() => ({ value: false }));
 vi.mock("@/lib/supabase/server", () => ({
   createClient: async () => (fake.current as ReturnType<typeof createFakeSupabase>).client,
 }));
+vi.mock("@/lib/supabase/admin", () => ({
+  createAdminClient: () => (fake.current as ReturnType<typeof createFakeSupabase>).client,
+}));
 vi.mock("@/lib/rate-limit", () => ({ isRateLimited: async () => rateLimited.value }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn(), revalidateTag: vi.fn() }));
 vi.mock("next/navigation", () => ({
@@ -27,6 +30,8 @@ let supabase: ReturnType<typeof createFakeSupabase>;
 beforeEach(() => {
   supabase = createFakeSupabase();
   fake.current = supabase;
+  supabase.setRpc("record_admin_login", { data: false, error: null });
+  supabase.client.auth.signOut.mockResolvedValue({ error: null });
   rateLimited.value = false;
 });
 
@@ -88,16 +93,32 @@ describe("signInAction (login)", () => {
   const credentials = { email: "jan@example.com", password: "Secret123" };
 
   it("signs in and redirects to the requested safe path", async () => {
-    supabase.client.auth.signInWithPassword.mockResolvedValue({ error: null });
+    supabase.client.auth.signInWithPassword.mockResolvedValue({ data: { user: { id: "admin-id" } }, error: null });
     await expect(signInAction(credentials, "/checkout")).rejects.toThrow("NEXT_REDIRECT:/checkout");
+    expect(supabase.client.rpc).toHaveBeenCalledWith("record_admin_login", { p_actor: "admin-id" });
   });
 
   it("ignores external redirect targets", async () => {
-    supabase.client.auth.signInWithPassword.mockResolvedValue({ error: null });
+    supabase.client.auth.signInWithPassword.mockResolvedValue({ data: { user: { id: "customer-id" } }, error: null });
     await expect(signInAction(credentials, "https://evil.example")).rejects.toThrow(
       "NEXT_REDIRECT:/account",
     );
     await expect(signInAction(credentials, "//evil.example")).rejects.toThrow("NEXT_REDIRECT:/account");
+  });
+
+  it("reports audit failure and closes the new session", async () => {
+    supabase.client.auth.signInWithPassword.mockResolvedValue({ data: { user: { id: "admin-id" } }, error: null });
+    supabase.setRpc("record_admin_login", { data: null, error: { message: "unavailable" } });
+    expect(await signInAction(credentials)).toMatchObject({ success: false });
+    expect(supabase.client.auth.signOut).toHaveBeenCalled();
+  });
+
+  it("reports when audit failure leaves a session that could not be closed", async () => {
+    supabase.client.auth.signInWithPassword.mockResolvedValue({ data: { user: { id: "admin-id" } }, error: null });
+    supabase.setRpc("record_admin_login", { data: null, error: { message: "unavailable" } });
+    supabase.client.auth.signOut.mockResolvedValue({ error: { message: "unavailable" } });
+    const result = await signInAction(credentials);
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining("could not be closed") });
   });
 
   it("returns one generic error for wrong credentials (no user enumeration)", async () => {
